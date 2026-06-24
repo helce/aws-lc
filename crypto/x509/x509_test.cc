@@ -31,6 +31,7 @@
 #include <openssl/err.h>
 #include <openssl/nid.h>
 #include <openssl/pem.h>
+#include <openssl/pkcs7.h>
 #include <openssl/pool.h>
 #include <openssl/rand.h>
 #include <openssl/x509.h>
@@ -2961,6 +2962,63 @@ TEST(X509Test, SignCSR) {
       // Check again specifically with |X509_REQ_check_private_key|.
       EXPECT_TRUE(X509_REQ_check_private_key(csr.get(), pkey.get()));
     }
+  }
+}
+
+TEST(X509Test, PqdsaCSR) {
+  for (int val: std::vector<int>{44, 65, 87}) {
+    std::ostringstream path;
+    path << "crypto/x509/test/csr-mldsa" << val << ".pem";
+    bssl::UniquePtr<X509_REQ> csr = CSRFromPEM(GetTestData(path.str().c_str()).c_str());
+    ASSERT_TRUE(csr);
+
+    // Test signature verification
+    EVP_PKEY* pub_key = X509_REQ_get0_pubkey(csr.get());
+    ASSERT_TRUE(pub_key);
+    ASSERT_EQ(1, X509_REQ_verify(csr.get(), pub_key));
+
+    // Test version
+    EXPECT_EQ(X509_REQ_VERSION_1, X509_REQ_get_version(csr.get()));
+
+    // Test subject name - verify "Generic" is parsed correctly
+    X509_NAME *subject = X509_REQ_get_subject_name(csr.get());
+    ASSERT_TRUE(subject);
+    char *subject_str = X509_NAME_oneline(subject, nullptr, 0);
+    ASSERT_TRUE(subject_str);
+    EXPECT_STREQ("/CN=Generic", subject_str);
+    OPENSSL_free(subject_str);
+
+    // Test signature algorithm NID
+    int sig_nid = X509_REQ_get_signature_nid(csr.get());
+    EXPECT_NE(NID_undef, sig_nid);
+    switch (val) {
+      case 44:
+        EXPECT_EQ(NID_MLDSA44, sig_nid);
+        break;
+      case 65:
+        EXPECT_EQ(NID_MLDSA65, sig_nid);
+        break;
+      case 87:
+        EXPECT_EQ(NID_MLDSA87, sig_nid);
+        break;
+      default:
+        ADD_FAILURE() << "Invalid NID";
+    }
+
+    // Test signature and algorithm retrieval
+    const ASN1_BIT_STRING *sig = nullptr;
+    const X509_ALGOR *alg = nullptr;
+    X509_REQ_get0_signature(csr.get(), &sig, &alg);
+    ASSERT_TRUE(sig);
+    ASSERT_TRUE(alg);
+
+    // Test attribute count
+    int attr_count = X509_REQ_get_attr_count(csr.get());
+    EXPECT_GE(attr_count, 0);
+
+    // Test extensions (may be NULL if no extensions present)
+    bssl::UniquePtr<STACK_OF(X509_EXTENSION)> exts(X509_REQ_get_extensions(csr.get()));
+    // Extensions are optional, so we just verify the function doesn't crash
   }
 }
 
@@ -8406,4 +8464,42 @@ TEST(X509Test, X509MultipleCustomExtensions) {
                               /*flags=*/0, set_custom_exts_with_callback));
   // Check that |EXFLAG_CRITICAL| has been removed after validation.
   EXPECT_FALSE(X509_get_extension_flags(cert.get()) & EXFLAG_CRITICAL);
+}
+
+TEST(X509Test, StoreVerifyCallback) {
+  bssl::UniquePtr<X509_STORE> store(X509_STORE_new());
+  ASSERT_TRUE(store);
+
+  // Initially verify callback should be null
+  EXPECT_EQ(nullptr, X509_STORE_get_verify_cb(store.get()));
+
+  // Store the callback pointer for comparison
+  X509_STORE_CTX_verify_cb verify_cb = [](int ok, X509_STORE_CTX *ctx) -> int {
+    return 1;
+  };
+
+  // Set a custom verify callback
+  X509_STORE_set_verify_cb(store.get(), verify_cb);
+
+  // Verify callback should now be set and match the stored pointer
+  EXPECT_EQ(verify_cb, X509_STORE_get_verify_cb(store.get()));
+}
+
+TEST(X509Test, StoreLookupCRLs) {
+  bssl::UniquePtr<X509_STORE> store(X509_STORE_new());
+  ASSERT_TRUE(store);
+
+  // Initially lookup_crls callback should be null
+  EXPECT_EQ(nullptr, X509_STORE_get_lookup_crls(store.get()));
+
+  X509_STORE_CTX_lookup_crls_fn lookup_crls = [](X509_STORE_CTX *ctx,
+                                                 X509_NAME *nm) {
+    return sk_X509_CRL_new_null();
+  };
+
+  // Set the custom lookup_crls callback
+  X509_STORE_set_lookup_crls(store.get(), lookup_crls);
+
+  // Lookup_crls callback should now be set and match the stored pointer
+  EXPECT_EQ(lookup_crls, X509_STORE_get_lookup_crls(store.get()));
 }
