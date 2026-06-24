@@ -38,7 +38,7 @@ if(BORINGSSL_PREFIX)
   if(MSVC)
     set(JITTER_ENETROPY_PREFIX_INCLUDE "/FI \"${PROJECT_BINARY_DIR}/symbol_prefix_include/openssl/boringssl_prefix_symbols.h\"")
   else()
-    set(JITTER_ENETROPY_PREFIX_INCLUDE "--include=\"${PROJECT_BINARY_DIR}/symbol_prefix_include/openssl/boringssl_prefix_symbols.h\"")
+    set(JITTER_ENETROPY_PREFIX_INCLUDE "--include \"${PROJECT_BINARY_DIR}/symbol_prefix_include/openssl/boringssl_prefix_symbols.h\"")
   endif()
 endif()
 
