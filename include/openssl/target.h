@@ -80,6 +80,9 @@
 #define OPENSSL_32_BIT
 #elif defined(__myriad2__)
 #define OPENSSL_32_BIT
+#elif defined(__e2k__)
+#define OPENSSL_64_BIT
+#define OPENSSL_E2K
 #else
 // Run the crypto_test binary, notably crypto/compiler_test.cc, before adding
 // a new architecture.
