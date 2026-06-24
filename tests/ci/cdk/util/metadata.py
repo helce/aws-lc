@@ -33,6 +33,14 @@ WINDOWS_X86_ECR_REPO = EnvUtil.get(
     "ECR_WINDOWS_X86_REPO_NAME", "aws-lc-docker-images-windows-x86"
 )
 
+UBUNTU_ECR_REPO = "aws-lc/ubuntu"
+AMAZONLINUX_ECR_REPO = "aws-lc/amazonlinux"
+CENTOS_ECR_REPO = "aws-lc/centos"
+FEDORA_ECR_REPO = "aws-lc/fedora"
+WINDOWS_ECR_REPO = "aws-lc/windows"
+VERIFICATION_ECR_REPO = "aws-lc/verification"
+ANDROID_ECR_REPO = "aws-lc/android"
+
 # Used when AWS CodeBuild needs to create web_hooks.
 GITHUB_REPO_OWNER = EnvUtil.get("GITHUB_REPO_OWNER", "aws")
 GITHUB_REPO_NAME = EnvUtil.get("GITHUB_REPO_NAME", "aws-lc")
@@ -55,3 +63,4 @@ S3_FOR_WIN_DOCKER_IMG_BUILD = EnvUtil.get(
 )
 
 GITHUB_PUSH_CI_BRANCH_TARGETS = r"(main|fips-\d{4}-\d{2}-\d{2}.*)"
+SCRUTINICE_PRINCIPAL_ROLE_ARN = "arn:aws:iam::222961743098:role/scrutini-ecr"
