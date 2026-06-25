@@ -2640,6 +2640,68 @@ TEST(X509Test, NameConstraints) {
       // An incomplete IPv6 literal is also rejected.
       {GEN_URI, "foo://[2001:db8::1", "[2001:db8::1]",
        X509_V_ERR_UNSUPPORTED_NAME_SYNTAX, X509_V_ERR_UNSUPPORTED_NAME_SYNTAX},
+
+      // RFC 3986 §3.2 defines authority = [userinfo "@"] host [":" port].
+      // URIs with userinfo are rejected to prevent host confusion: without
+      // this, "spiffe://x.team-a.corp:x@team-b.corp/admin" would be matched
+      // against "x.team-a.corp" instead of the actual host "team-b.corp",
+      // bypassing permittedSubtrees or evading excludedSubtrees.
+      //
+      // Basic userinfo before host.
+      {GEN_URI, "foo://user@example.com", "example.com",
+       X509_V_ERR_UNSUPPORTED_NAME_SYNTAX, X509_V_ERR_UNSUPPORTED_NAME_SYNTAX},
+      // Userinfo with colon (user:password style) — the colon in userinfo
+      // would previously be mistaken for a port delimiter, extracting the
+      // userinfo prefix as the host.
+      {GEN_URI, "spiffe://x.team-a.corp:x@team-b.corp/admin", "team-a.corp",
+       X509_V_ERR_UNSUPPORTED_NAME_SYNTAX, X509_V_ERR_UNSUPPORTED_NAME_SYNTAX},
+      {GEN_URI, "spiffe://x.team-a.corp:x@team-b.corp/admin", "team-b.corp",
+       X509_V_ERR_UNSUPPORTED_NAME_SYNTAX, X509_V_ERR_UNSUPPORTED_NAME_SYNTAX},
+      // Userinfo with path, query, and fragment components.
+      {GEN_URI, "foo://user@example.com/path", "example.com",
+       X509_V_ERR_UNSUPPORTED_NAME_SYNTAX, X509_V_ERR_UNSUPPORTED_NAME_SYNTAX},
+      {GEN_URI, "foo://user@example.com?query", "example.com",
+       X509_V_ERR_UNSUPPORTED_NAME_SYNTAX, X509_V_ERR_UNSUPPORTED_NAME_SYNTAX},
+      {GEN_URI, "foo://user@example.com#fragment", "example.com",
+       X509_V_ERR_UNSUPPORTED_NAME_SYNTAX, X509_V_ERR_UNSUPPORTED_NAME_SYNTAX},
+      // '@' in path (after '/') is not userinfo and should not be rejected.
+      {GEN_URI, "foo://example.com/@user", "example.com", X509_V_OK,
+       X509_V_ERR_EXCLUDED_VIOLATION},
+      {GEN_URI, "foo://example.com/path@thing", ".example.com",
+       X509_V_ERR_PERMITTED_VIOLATION, X509_V_OK},
+      // '@' after '?' or '#' is not in the authority and is not rejected.
+      // However, since the host parser doesn't treat '?' or '#' as authority
+      // terminators, the extracted host contains invalid FQDN characters and
+      // is rejected by FQDN validation.
+      {GEN_URI, "foo://example.com?x@y", "example.com",
+       X509_V_ERR_UNSUPPORTED_NAME_SYNTAX, X509_V_ERR_UNSUPPORTED_NAME_SYNTAX},
+      {GEN_URI, "foo://example.com#x@y", "example.com",
+       X509_V_ERR_UNSUPPORTED_NAME_SYNTAX, X509_V_ERR_UNSUPPORTED_NAME_SYNTAX},
+      // Empty userinfo and user:pass userinfo are both rejected.
+      {GEN_URI, "foo://@example.com", "example.com",
+       X509_V_ERR_UNSUPPORTED_NAME_SYNTAX, X509_V_ERR_UNSUPPORTED_NAME_SYNTAX},
+      {GEN_URI, "foo://user:pass@example.com", "example.com",
+       X509_V_ERR_UNSUPPORTED_NAME_SYNTAX, X509_V_ERR_UNSUPPORTED_NAME_SYNTAX},
+
+      // Trailing dot normalization: "host." and "host" are the same FQDN.
+      // This matches the normalization in nc_dns().
+      {GEN_URI, "spiffe://admin.team-a.corp./admin", ".team-a.corp",
+       X509_V_OK, X509_V_ERR_EXCLUDED_VIOLATION},
+      {GEN_URI, "spiffe://admin.team-a.corp/admin", ".team-a.corp.",
+       X509_V_OK, X509_V_ERR_EXCLUDED_VIOLATION},
+      {GEN_URI, "spiffe://team-a.corp./admin", "team-a.corp",
+       X509_V_OK, X509_V_ERR_EXCLUDED_VIOLATION},
+
+      // FQDN validation: hosts must contain only a-z, A-Z, 0-9, '-', '.'.
+      // Percent-encoded hosts are rejected, preventing equivalence bypasses
+      // (e.g., "b%61d.com" should not evade an exclusion for ".bad.com").
+      {GEN_URI, "spiffe://evil.b%61d.com/resource", ".bad.com",
+       X509_V_ERR_UNSUPPORTED_NAME_SYNTAX, X509_V_ERR_UNSUPPORTED_NAME_SYNTAX},
+      {GEN_URI, "foo://ex%61mple.com/path", "example.com",
+       X509_V_ERR_UNSUPPORTED_NAME_SYNTAX, X509_V_ERR_UNSUPPORTED_NAME_SYNTAX},
+      // Underscores are not valid in FQDNs.
+      {GEN_URI, "foo://my_host.example.com/path", ".example.com",
+       X509_V_ERR_UNSUPPORTED_NAME_SYNTAX, X509_V_ERR_UNSUPPORTED_NAME_SYNTAX},
   };
   for (const auto &t : kTests) {
     SCOPED_TRACE(t.type);
@@ -5976,6 +6038,7 @@ TEST(X509Test, Names) {
   }
 }
 
+#if defined(OPENSSL_THREADS)
 TEST(X509Test, AddDuplicates) {
   bssl::UniquePtr<X509_STORE> store(X509_STORE_new());
   bssl::UniquePtr<X509> a(CertFromPEM(kCrossSigningRootPEM));
@@ -6019,6 +6082,7 @@ TEST(X509Test, AddDuplicates) {
 
   EXPECT_EQ(sk_X509_OBJECT_num(X509_STORE_get0_objects(store.get())), 2u);
 }
+#endif  // OPENSSL_THREADS
 
 TEST(X509Test, BytesToHex) {
   struct {
@@ -6355,6 +6419,42 @@ TEST(X509Test, ITUT_X509_nid_rsa) {
   ASSERT_TRUE(cert);
 
   EXPECT_TRUE(X509_get_X509_PUBKEY(cert.get()));
+  bssl::UniquePtr<EVP_PKEY> evp_pkey(X509_get_pubkey(cert.get()));
+  EXPECT_TRUE(evp_pkey);
+
+  bssl::UniquePtr<RSA> rsa(EVP_PKEY_get1_RSA(evp_pkey.get()));
+  EXPECT_TRUE(rsa);
+}
+
+// kRsaesOaepCertPEM is a TPM 1.2 EK certificate with |NID_rsaesOaep| SPKI.
+static const char kRsaesOaepCertPEM[] = R"(
+-----BEGIN CERTIFICATE-----
+MIIDhDCCAmygAwIBAgIUBchBXcXPAWxNMJEsLXEXHv/eVZswDQYJKoZIhvcNAQEL
+BQAwVTELMAkGA1UEBhMCQ0gxHjAcBgNVBAoTFVNUTWljcm9lbGVjdHJvbmljcyBO
+VjEmMCQGA1UEAxMdU1RNIFRQTSBFSyBJbnRlcm1lZGlhdGUgQ0EgMDIwHhcNMjEw
+OTA0MDAwMDAwWhcNMzEwOTA0MDAwMDAwWjAAMIIBNzAiBgkqhkiG9w0BAQcwFaIT
+MBEGCSqGSIb3DQEBCQQEVENQQQOCAQ8AMIIBCgKCAQEAxpd3DnecpD87acEsYp4J
+stM2q5Ss3CkjAP2Ei8yGjbO6DG/6WBIZjTdI5RfIcInoqN4QMso94vm8VqijdRI+
+Zo5hLTCPLKXYwa6UG5yIPZ3ENQdhgZWeEPWe+pp9VUwz8wi78Ifk+CCV6Xp/5kQi
+DCsR+RYbOVb9QgR6kjq+cx1z8YFp5u+k3Pl9tMq9xgIp5E6hT2MaS12KnoN8+hYI
+mfCYVnpzBeQaHDp1KUoyDK6xGt86VxB0QyRbniHI38qgQL6qhO7z96aQ0pNGoQde
+QUxFf/sETurQ5zSf+3btnS8afjxdVBKzj3isv5BaQrt0mdB7+3XWD+ASda33SY12
+6wIDAQABo4GLMIGIMB8GA1UdIwQYMBaAFFcfgGtHzOeb+jWUfO2IuNEAWuCeMEIG
+A1UdIAQ7MDkwNwYEVR0gADAvMC0GCCsGAQUFBwIBFiFodHRwOi8vd3d3LnN0LmNv
+bS9UUE0vcmVwb3NpdG9yeS8wDAYDVR0TAQH/BAIwADATBgNVHSUBAf8ECTAHBgVn
+gQUIATANBgkqhkiG9w0BAQsFAAOCAQEAMOhFPNcebyCRFOBztlWhmDb2DHTCD0nC
+DVobH4WZJXGf4bkYNO3mOLyWtHEVzb36kiq7enh3f/eGhDPwKB8axlozpR5KAvER
+szKNO8iLGOjuYzI2A4DazkttczFfzSB9QDgJrwTNEfIJtwRm2HQSiL0zzuEQOnaS
+UWyt/iKn4/34BjEeaw4/Ld7+f06LXqSr18SUr0LTB2kk+Zzf0Och1C+G1CNLgJMM
+MNQikAv0xdaOMX3HzA+phFlLbw/x8sboMlzmrbr92a/4Fp5WvmOSHH3ciwTtbAQn
+A2TfExNOaKD2BG5FnB7c66puw2/yVxhveocQYgmT9XtMrNX00vEZJQ==
+-----END CERTIFICATE-----
+)";
+
+TEST(X509Test, RsaesOaepSPKI) {
+  bssl::UniquePtr<X509> cert(CertFromPEM(kRsaesOaepCertPEM));
+  ASSERT_TRUE(cert);
+
   bssl::UniquePtr<EVP_PKEY> evp_pkey(X509_get_pubkey(cert.get()));
   EXPECT_TRUE(evp_pkey);
 
