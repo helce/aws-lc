@@ -674,6 +674,8 @@ void PrintSSLError(FILE *file, const char *msg, int ssl_err, int ret) {
 }
 
 bool TransferData(SSL *ssl, int sock) {
+  SSL_set_options(ssl, SSL_OP_IGNORE_UNEXPECTED_EOF);
+
   if (!SocketSetNonBlocking(sock, true)) {
     return false;
   }
@@ -798,6 +800,14 @@ class SocketLineReader {
 
       if (n < 0) {
         fprintf(stderr, "Read error from socket\n");
+        return false;
+      }
+
+      if (n == 0) {
+        // The peer closed the connection without terminating the line. Without
+        // this check the loop would spin forever, because |buf_len_| can no
+        // longer grow and no '\n' will be found.
+        fprintf(stderr, "Unexpected EOF from socket\n");
         return false;
       }
 
